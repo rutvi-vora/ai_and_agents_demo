@@ -2,15 +2,21 @@ import  os
 from dotenv import load_dotenv
 from openai import OpenAI
 import requests
+from pydantic import BaseModel, Field
+from typing import Optional
 
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 client = OpenAI(
-    api_key=GEMINI_API_KEY,
-    base_url="https://generativelanguage.googleapis.com/v1beta/"
+    # api_key=GEMINI_API_KEY,
+    # base_url="https://generativelanguage.googleapis.com/v1beta/"
 )
+
+def run_command(cmd: str):
+    result = os.system(cmd)
+    return result
 
 def get_weather(city):
     url = f"https://wttr.in/{city.lower()}?format=%C+%t"
@@ -21,7 +27,8 @@ def get_weather(city):
         return "Sorry, I couldn't fetch the weather information right now."
 
 available_tools = {
-    "get_weather": get_weather
+    "get_weather": get_weather,
+    "run_command": run_command
 }
 
 SYSTEM_PROMPT = """You are an expert AI assistant in resolving user queries using chain of thought.
@@ -39,6 +46,8 @@ Output JSON Format:
 
 Available Tools:
 - get_weather(city: str) -> str : Fetches the current weather for the specified city
+- run_command(cmd: str) -> int : Takes a system linux command and executes the command on user's system and returns
+the output from the command.
 
 Example:
 START: Hey, what is the weather of delhi?
@@ -55,6 +64,12 @@ OUTPUT: {"step": "OUTPUT", "content": "The current weather in delhi is 35 degree
 
 print("\n\n\n")
 
+class MyOutputModel(BaseModel):
+    step: str = Field(..., description="ID of the step.One of START, PLAN, TOOL, OUTPUT")
+    content: Optional[str] = Field(None, description="Content of the step")
+    tool: Optional[str] = Field(None, description="ID of Toolto be called")
+    input: Optional[str] = Field(None, description="Input params for the tool")
+
 messages_history = [
     {"role": "system", "content": SYSTEM_PROMPT}
 ]
@@ -63,30 +78,31 @@ user_query = input("> ")
 messages_history.append({"role": "user", "content": user_query})
 
 while True:
-    response = client.chat.completions.create(
-        model="gemini-2.5-flash",
-        response_format={"type": "json_object"},
+    response = client.chat.completions.parse(
+        model="gpt-4o-mini",
+        response_format=MyOutputModel,
         messages=messages_history,
     )
 
     raw_result = response.choices[0].message.content
     messages_history.append({"role": "assistant", "content": raw_result})
     import json
-    parsed_result = json.loads(raw_result)
+    # parsed_result = json.loads(raw_result)
+    parsed_result = response.choices[0].message.parsed
 
-    if parsed_result.get("STEP") == "START":
+    if parsed_result.step == "START":
         print(parsed_result.get("content"))
         continue
 
-    if parsed_result.get("step") == "PLAN":
-        print(f"PLAN: {parsed_result.get('content')}")
+    if parsed_result.step == "PLAN":
+        print(f"PLAN: {parsed_result.content}")
         continue
 
-    if parsed_result.get("step") == "TOOL":
-        tool_name = parsed_result.get("tool")
-        tool_input = parsed_result.get("input")
+    if parsed_result.step == "TOOL":
+        tool_name = parsed_result.tool
+        tool_input = parsed_result.input
         print(f"{tool_name} ({tool_input})")
-        tool_response = available_tools[tool_name](tool_input)()
+        tool_response = available_tools[tool_name](tool_input)
         messages_history.append({
             "role": "developer",
             "content": json.dumps(
@@ -101,8 +117,8 @@ while True:
         continue
 
 
-    if parsed_result.get("step") == "OUTPUT":
-        print(f"OUTPUT: {parsed_result.get('content')}")
+    if parsed_result.step == "OUTPUT":
+        print(f"OUTPUT: {parsed_result.content}")
         break
 
 print("\n\n\n")
